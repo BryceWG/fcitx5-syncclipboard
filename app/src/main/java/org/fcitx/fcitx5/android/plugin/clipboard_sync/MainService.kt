@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -31,6 +32,7 @@ class MainService : FcitxPluginService() {
     // Cache to avoid circular updates (Pull -> Local -> Push -> Loop)
     private var lastLocalContent: String? = null
     private var lastRemoteContent: String? = null
+    private var lastRemoteHash: String = ""
 
     private val transformer = object : IClipboardEntryTransformer.Stub() {
         override fun getPriority(): Int = 100
@@ -39,7 +41,6 @@ class MainService : FcitxPluginService() {
             // This is called when user copies text locally
             if (clipboardText == lastRemoteContent) {
                 // If this change matches what we just pulled, ignore it (don't push back)
-                // Log.d(TAG, "[Push] Ignored circular update")
                 return clipboardText
             }
 
@@ -108,7 +109,7 @@ class MainService : FcitxPluginService() {
         
         scope.launch {
             try {
-                SyncClient.putClipboard(url, user, pass, text)
+                SyncClient.putClipboard(this@MainService, url, user, pass, text)
             } catch (e: Exception) {
                 Log.e(TAG, "[Push] Failed to upload clipboard", e)
             }
@@ -156,30 +157,39 @@ class MainService : FcitxPluginService() {
 
         if (url.isBlank()) return
 
+        val downloadPath = prefs.getString("download_path", null)
+        val downloadUri = if (downloadPath != null) Uri.parse(downloadPath) else null
+
         try {
-            val remoteText = SyncClient.getClipboard(url, user, pass)
+            // 1. Fetch metadata (JSON) only
+            val partialData = SyncClient.fetchClipboardJson(url, user, pass)
+
+            // 2. Check if hash matches last known remote hash to avoid repeated downloads
+            if (partialData.hash.isNotEmpty() && partialData.hash == lastRemoteHash) {
+                return
+            }
+
+            // 3. Download full details (files) if changed
+            val data = SyncClient.downloadDetails(this, url, user, pass, partialData, downloadUri)
+
+            // 4. Update hash cache
+            if (data.hash.isNotEmpty()) {
+                lastRemoteHash = data.hash
+            }
+
+            val remoteText = data.text
             
             if (remoteText.isNotEmpty() && remoteText != lastLocalContent && remoteText != lastRemoteContent) {
                 Log.d(TAG, "[Pull] Remote content changed, updating local")
                 lastRemoteContent = remoteText
                 lastLocalContent = remoteText // Update local cache to prevent echo
                 
-                // Update System Clipboard
-                // Since we are a service, we can try to update clipboard
-                // But typically Fcitx plugin updates clipboard via return value of transform()
-                // However, transform() is passive.
-                // To actively update clipboard, we might need to use Android ClipboardManager
-                // Note: Background services have restrictions on accessing clipboard on Android 10+
-                // But since this is an IME plugin, or if the app is in foreground (Settings), it might work.
-                // Fcitx5 main app usually handles clipboard, but here we want to push TO fcitx or system.
-                // Since we don't have an API in IFcitxRemoteService to "setClipboard", we use system API.
-                
                 withContext(Dispatchers.Main) {
                     updateSystemClipboard(remoteText)
                 }
             }
         } catch (e: Exception) {
-            // Logged in SyncClient
+            Log.e(TAG, "[Pull] Error checking remote clipboard", e)
         }
     }
 

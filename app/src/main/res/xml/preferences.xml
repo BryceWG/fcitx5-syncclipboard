@@ -32,8 +32,13 @@
         app:defaultValue="true" />
 
     <Preference
+        app:key="download_path"
+        app:title="@string/download_path"
+        app:summary="@string/download_path_not_set" />
+
+    <Preference
         app:key="test_connection"
         app:title="@string/test_connection"
-        app:summary="Click to test server configuration" />
+        app:summary="@string/clicktest" />
 
 </PreferenceScreen>

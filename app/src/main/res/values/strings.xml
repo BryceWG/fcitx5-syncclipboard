@@ -19,4 +19,9 @@
     <string name="please_set_server_address">请先设置服务器地址</string>
     <string name="connecting_to">正在连接到 %s...</string>
     <string name="unknown_error">未知错误</string>
+    
+    <string name="download_path">下载目录</string>
+    <string name="download_path_summary">点击选择文件下载保存位置</string>
+    <string name="download_path_not_set">未设置</string>
+    <string name="clicktest">点击测试服务器可用性</string>
 </resources>

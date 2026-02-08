@@ -1,8 +1,10 @@
 package org.fcitx.fcitx5.android.plugin.clipboard_sync.ui
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
@@ -35,6 +37,18 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     class SettingsFragment : PreferenceFragmentCompat() {
+
+        private val openDocumentTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            uri?.let {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                requireContext().contentResolver.takePersistableUriPermission(it, flags)
+                
+                preferenceManager.sharedPreferences?.edit()?.putString("download_path", it.toString())?.apply()
+                findPreference<Preference>("download_path")?.summary = it.toString()
+            }
+        }
+
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
 
@@ -44,6 +58,16 @@ class SettingsActivity : AppCompatActivity() {
 
             findPreference<EditTextPreference>("sync_interval")?.setOnBindEditTextListener { editText ->
                 editText.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            }
+
+            val downloadPref = findPreference<Preference>("download_path")
+            val savedUri = preferenceManager.sharedPreferences?.getString("download_path", null)
+            if (savedUri != null) {
+                downloadPref?.summary = savedUri
+            }
+            downloadPref?.setOnPreferenceClickListener {
+                openDocumentTree.launch(null)
+                true
             }
 
             findPreference<Preference>("test_connection")?.setOnPreferenceClickListener {
