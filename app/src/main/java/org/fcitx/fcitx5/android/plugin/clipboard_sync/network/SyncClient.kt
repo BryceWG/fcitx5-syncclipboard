@@ -57,23 +57,36 @@ object SyncClient {
     fun fetchClipboardJson(
         serverUrl: String, 
         username: String, 
-        pass: String
-    ): ClipboardData {
+        pass: String,
+        etag: String? = null
+    ): Pair<ClipboardData?, String?> {
         val (_, jsonUrl) = getBaseAndJsonUrl(serverUrl)
-        Log.d(TAG, "[Pull] Fetching from $jsonUrl")
+        // Log.d(TAG, "[Pull] Fetching from $jsonUrl")
         
         val credential = Credentials.basic(username, pass)
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(jsonUrl)
             .header("Authorization", credential)
             .get()
-            .build()
+
+        if (!etag.isNullOrEmpty()) {
+            requestBuilder.header("If-None-Match", etag)
+        }
+
+        val request = requestBuilder.build()
 
         client.newCall(request).execute().use { response ->
+            if (response.code == 304) {
+                // Not Modified
+                return null to (response.header("ETag") ?: etag)
+            }
+
             if (!response.isSuccessful) {
                 Log.e(TAG, "[Pull] Failed: ${response.code} ${response.message}")
                 throw IOException("Unexpected code $response")
             }
+            
+            val newETag = response.header("ETag")
             var bodyString = response.body?.string() ?: ""
             // Handle BOM
             if (bodyString.startsWith("\uFEFF")) {
@@ -81,7 +94,7 @@ object SyncClient {
             }
             // Log.d(TAG, "[Pull] Response body: $bodyString")
             try {
-                return json.decodeFromString<ClipboardData>(bodyString)
+                return json.decodeFromString<ClipboardData>(bodyString) to newETag
             } catch (e: Exception) {
                 Log.e(TAG, "[Pull] JSON Parse Error", e)
                 throw IOException("Failed to parse JSON: ${e.message}", e)
@@ -160,7 +173,8 @@ object SyncClient {
         pass: String,
         downloadDirUri: Uri? = null
     ): ClipboardData {
-        val data = fetchClipboardJson(serverUrl, username, pass)
+        val (data, _) = fetchClipboardJson(serverUrl, username, pass)
+        if (data == null) throw IOException("Unexpected 304 in legacy getClipboard")
         return downloadDetails(context, serverUrl, username, pass, data, downloadDirUri)
     }
 

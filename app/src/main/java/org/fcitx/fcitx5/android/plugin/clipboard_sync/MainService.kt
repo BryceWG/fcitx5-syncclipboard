@@ -3,10 +3,14 @@ package org.fcitx.fcitx5.android.plugin.clipboard_sync
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.BroadcastReceiver
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.preference.PreferenceManager
 import kotlinx.coroutines.*
@@ -28,6 +32,28 @@ class MainService : FcitxPluginService() {
     private var syncJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var lastETag: String? = null
+    private val powerManager by lazy { getSystemService(Context.POWER_SERVICE) as PowerManager }
+    
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    Log.d(TAG, "Screen off, stopping sync")
+                    stopPeriodicSync()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    Log.d(TAG, "Screen on, restarting sync")
+                    startPeriodicSync()
+                }
+                PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> {
+                    Log.d(TAG, "Power save mode changed, restarting sync")
+                    startPeriodicSync()
+                }
+            }
+        }
+    }
 
     // Cache to avoid circular updates (Pull -> Local -> Push -> Loop)
     private var lastLocalContent: String? = null
@@ -59,6 +85,13 @@ class MainService : FcitxPluginService() {
         super.onCreate()
         Log.d(TAG, "MainService onCreate")
         prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+        }
+        registerReceiver(screenReceiver, filter)
     }
 
     override fun start() {
@@ -84,6 +117,7 @@ class MainService : FcitxPluginService() {
 
     override fun stop() {
         Log.d(TAG, "MainService stop")
+        runCatching { unregisterReceiver(screenReceiver) }
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         stopPeriodicSync()
         runCatching {
@@ -130,7 +164,11 @@ class MainService : FcitxPluginService() {
             while (isActive) {
                 try {
                     val interval = prefs.getString("sync_interval", "3")?.toLongOrNull() ?: 3L
-                    val safeInterval = interval.coerceIn(1, 60)
+                    var safeInterval = interval.coerceIn(1, 60)
+                    
+                    if (powerManager.isPowerSaveMode) {
+                        safeInterval = 60L
+                    }
                     
                     checkRemoteClipboard()
                     
@@ -162,7 +200,16 @@ class MainService : FcitxPluginService() {
 
         try {
             // 1. Fetch metadata (JSON) only
-            val partialData = SyncClient.fetchClipboardJson(url, user, pass)
+            val (partialData, newETag) = SyncClient.fetchClipboardJson(url, user, pass, lastETag)
+            
+            if (newETag != null) {
+                lastETag = newETag
+            }
+            
+            if (partialData == null) {
+                // 304 Not Modified
+                return
+            }
 
             // 2. Check if hash matches last known remote hash to avoid repeated downloads
             if (partialData.hash.isNotEmpty() && partialData.hash == lastRemoteHash) {
