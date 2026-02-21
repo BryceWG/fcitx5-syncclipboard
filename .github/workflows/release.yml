@@ -82,7 +82,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # `yes | ...` triggers SIGPIPE on `yes`, which becomes a failure with `set -o pipefail`.
+          # Temporarily disable pipefail while accepting licenses.
+          set +o pipefail
           yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle
